@@ -1,7 +1,7 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "flutter-portable-manager",
-  "outputfilename": "flutter-portable-manager",
+  "name": "sriganti",
+  "outputfilename": "sriganti",
   "frontend:install": "",
   "frontend:build": "",
   "frontend:dev:watcher": "",
@@ -13,9 +13,9 @@
   },
   "info": {
     "companyName": "Portable Tools",
-    "productName": "Flutter & Dart Portable Manager",
+    "productName": "Sriganti",
     "productVersion": "1.0.0",
     "copyright": "Copyright (C) 2026",
-    "comments": "Zero-UAC Portable Flutter and Dart SDK Manager for Windows 10+"
+    "comments": "Light as a sunbird. Portable Flutter & Dart for Windows."
   }
 }
