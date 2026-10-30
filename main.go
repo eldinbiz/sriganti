@@ -15,7 +15,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Flutter & Dart Portable Manager",
+		Title:     "Sriganti — Portable Flutter & Dart for Windows",
 		Width:     980,
 		Height:    720,
 		MinWidth:  860,

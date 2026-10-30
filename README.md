@@ -85,7 +85,7 @@ Wails v2 provides an interactive development environment with dual live-reloadin
 
 ### Start Live Development Mode
 
-From the project root (`desktop-app/`), run:
+From the project root, run:
 
 ```cmd
 wails dev
