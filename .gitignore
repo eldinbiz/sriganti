@@ -1,0 +1,34 @@
+# Wails build output
+build/bin/
+
+# Go binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Test coverage
+coverage.txt
+profile.out
+
+# OS & Windows system files
+[Dd]esktop.ini
+[Tt]humbs.db
+$RECYCLE.BIN/
+.DS_Store
+
+# IDE & Editor artifacts
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs & crash dumps
+*.log
+*.dmp

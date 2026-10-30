@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sriganti — Portable Flutter &amp; Dart for Windows</title>
+  <script src="./assets/tailwindcss.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              400: '#60a5fa',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+  <script>
+    document.addEventListener('alpine:init', () => {
+      Alpine.data('portableManager', () => ({
+        activeTab: 'install',
+        isBusy: false,
+        confirmingCleanup: false,
+        bannerMessage: '',
+        bannerType: 'info',
+
+        // Install form state
+        installDir: '',
+        mode: 'flutter',
+        sourceType: 'online',
+        selectedFlutterVersion: '',
+        selectedDartVersion: '',
+        localZipPath: '',
+        autoInstallMinGit: true,
+
+        // Release catalog state
+        loadingReleases: false,
+        releaseError: '',
+        flutterReleases: [],
+        dartReleases: [],
+
+        // Pre-flight status report
+        preflight: {
+          status: 'not_installed',
+          statusLabel: 'Checking...',
+          installDir: '',
+          detectedMode: '',
+          flutterVersion: '',
+          dartVersion: '',
+          gitAvailable: false,
+          gitSource: 'missing',
+          gitPath: '',
+          pathAligned: false,
+          pubCacheAligned: false,
+          sdkExistsOnDisk: false,
+          movedFromDir: '',
+          expectedSdkBin: '',
+          expectedPubCache: '',
+          expectedPubCacheBin: ''
+        },
+
+        // Progress & logs
+        progress: {
+          stage: 'idle',
+          message: 'Ready.',
+          percent: 0,
+          bytesProcessed: 0,
+          bytesTotal: 0,
+          filesProcessed: 0,
+          filesTotal: 0
+        },
+        logs: [],
+
+        // Cleanup & Uninstall inspection state
+        cleanupInspection: {
+          installDir: '',
+          managedPathEntries: [],
+          pubCacheVarValue: '',
+          orphanedPaths: [],
+          diskTargets: []
+        },
+        cleanupSelection: {
+          removeManagedEnv: true,
+          orphans: {},
+          targets: {}
+        },
+
+        async init() {
+          this.appendLog('[System] Initializing Flutter & Dart Portable Manager (No-UAC Mode)...');
+          if (window.runtime && window.runtime.EventsOn) {
+            window.runtime.EventsOn('sdk:progress', (ev) => {
+              this.progress = ev || this.progress;
+            });
+            window.runtime.EventsOn('sdk:log', (line) => {
+              this.appendLog(line);
+            });
+          }
+
+          if (window.go && window.go.main && window.go.main.App) {
+            try {
+              const defDir = await window.go.main.App.GetDefaultInstallDir();
+              this.installDir = defDir;
+              await this.refreshPreflight();
+              await this.loadReleases();
+              await this.loadCleanupInspection();
+            } catch (err) {
+              this.showBanner('Initialization warning: ' + err, 'error');
+            }
+          }
+        },
+
+        appendLog(line) {
+          this.logs.push(line);
+          if (this.logs.length > 300) {
+            this.logs.shift();
+          }
+          this.$nextTick(() => {
+            const el = document.getElementById('activity-log-box');
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        },
+
+        clearLogs() {
+          this.logs = [];
+        },
+
+        showBanner(msg, type = 'info') {
+          this.bannerMessage = msg;
+          this.bannerType = type;
+        },
+
+        async refreshPreflight() {
+          if (!window.go?.main?.App) return;
+          try {
+            const rep = await window.go.main.App.GetPreflightStatus(this.installDir);
+            this.preflight = rep;
+            if (!this.installDir && rep.installDir) {
+              this.installDir = rep.installDir;
+            }
+          } catch (err) {
+            this.showBanner('Pre-flight check error: ' + err, 'error');
+          }
+        },
+
+        async loadReleases() {
+          if (!window.go?.main?.App) return;
+          this.loadingReleases = true;
+          this.releaseError = '';
+          try {
+            const cat = await window.go.main.App.FetchReleases();
+            this.flutterReleases = cat.flutterReleases || [];
+            this.dartReleases = cat.dartReleases || [];
+            if (!this.selectedFlutterVersion && cat.defaultFlutterVersion) {
+              this.selectedFlutterVersion = cat.defaultFlutterVersion;
+            }
+            if (!this.selectedDartVersion && cat.defaultDartVersion) {
+              this.selectedDartVersion = cat.defaultDartVersion;
+            }
+          } catch (err) {
+            this.releaseError = String(err);
+          } finally {
+            this.loadingReleases = false;
+          }
+        },
+
+        async browseInstallDir() {
+          if (!window.go?.main?.App) return;
+          try {
+            const picked = await window.go.main.App.SelectInstallDirectory(this.installDir);
+            if (picked) {
+              this.installDir = picked;
+              await this.refreshPreflight();
+              await this.loadCleanupInspection();
+            }
+          } catch (err) {
+            this.showBanner('Failed to select folder: ' + err, 'error');
+          }
+        },
+
+        async browseLocalZip() {
+          if (!window.go?.main?.App) return;
+          try {
+            const picked = await window.go.main.App.SelectZipArchive();
+            if (picked) {
+              this.localZipPath = picked;
+            }
+          } catch (err) {
+            this.showBanner('Failed to select .zip archive: ' + err, 'error');
+          }
+        },
+
+        currentReleaseObject() {
+          if (this.mode === 'dart-only') {
+            return this.dartReleases.find(r => r.version === this.selectedDartVersion) || this.dartReleases[0] || null;
+          }
+          return this.flutterReleases.find(r => r.version === this.selectedFlutterVersion) || this.flutterReleases[0] || null;
+        },
+
+        async startInstall() {
+          if (!window.go?.main?.App || this.isBusy) return;
+          this.isBusy = true;
+          this.bannerMessage = '';
+          this.progress = {
+            stage: 'starting',
+            message: 'Preparing installation...',
+            percent: 2,
+            bytesProcessed: 0,
+            bytesTotal: 0,
+            filesProcessed: 0,
+            filesTotal: 0
+          };
+
+          try {
+            const rel = this.currentReleaseObject();
+            const req = {
+              mode: this.mode,
+              sourceType: this.sourceType,
+              version: rel ? rel.version : '',
+              dartVersion: rel ? rel.dartVersion : '',
+              downloadUrl: (this.sourceType === 'online' && rel) ? rel.downloadUrl : '',
+              expectedSha256: (this.sourceType === 'online' && rel) ? (rel.sha256 || '') : '',
+              sha256Url: (this.sourceType === 'online' && rel) ? (rel.sha256Url || '') : '',
+              localZipPath: this.localZipPath,
+              installDir: this.installDir,
+              autoInstallMinGit: this.autoInstallMinGit
+            };
+
+            const res = await window.go.main.App.InstallSDK(req);
+            this.showBanner(
+              `Successfully installed ${res.mode === 'dart-only' ? 'Dart SDK' : 'Flutter & Dart SDK'} (${res.version}) and registered User PATH!`,
+              'success'
+            );
+            await this.refreshPreflight();
+            await this.loadCleanupInspection();
+          } catch (err) {
+            this.showBanner('Installation failed: ' + err, 'error');
+          } finally {
+            this.isBusy = false;
+          }
+        },
+
+        async cancelActiveOperation() {
+          if (!window.go?.main?.App) return;
+          await window.go.main.App.CancelOperation();
+        },
+
+        async registerPathOnly() {
+          if (!window.go?.main?.App || this.isBusy) return;
+          this.isBusy = true;
+          try {
+            const targetMode = this.preflight.detectedMode || this.mode;
+            const paths = await window.go.main.App.RegisterPathOnly(this.installDir, targetMode);
+            this.showBanner(`Registered ${paths.length} portable PATH entries in HKCU\\Environment (No UAC).`, 'success');
+            await this.refreshPreflight();
+            await this.loadCleanupInspection();
+          } catch (err) {
+            this.showBanner('Failed to register PATH: ' + err, 'error');
+          } finally {
+            this.isBusy = false;
+          }
+        },
+
+        async unregisterPathOnly() {
+          if (!window.go?.main?.App || this.isBusy) return;
+          this.isBusy = true;
+          try {
+            const removed = await window.go.main.App.UnregisterPathOnly(this.installDir);
+            this.showBanner(`Unregistered ${removed.length} PATH entries from HKCU\\Environment (SDK files kept on disk).`, 'info');
+            await this.refreshPreflight();
+            await this.loadCleanupInspection();
+          } catch (err) {
+            this.showBanner('Failed to unregister PATH: ' + err, 'error');
+          } finally {
+            this.isBusy = false;
+          }
+        },
+
+        async loadCleanupInspection() {
+          if (!window.go?.main?.App) return;
+          try {
+            const info = await window.go.main.App.InspectCleanup(this.installDir);
+            this.cleanupInspection = info;
+
+            const orphanMap = {};
+            for (const item of (info.orphanedPaths || [])) {
+              orphanMap[item.rawPath] = true;
+            }
+            this.cleanupSelection.orphans = orphanMap;
+
+            const targetMap = {};
+            for (const t of (info.diskTargets || [])) {
+              targetMap[t.id] = !!t.defaultTick;
+            }
+            this.cleanupSelection.targets = targetMap;
+          } catch (err) {
+            this.showBanner('Failed to inspect cleanup targets: ' + err, 'error');
+          }
+        },
+
+        async executeSelectedCleanup() {
+          if (!window.go?.main?.App || this.isBusy) return;
+          this.confirmingCleanup = false;
+          this.isBusy = true;
+          try {
+            const selectedOrphans = Object.keys(this.cleanupSelection.orphans).filter(k => this.cleanupSelection.orphans[k]);
+            const selectedCacheIds = Object.keys(this.cleanupSelection.targets).filter(
+              id => id !== 'portable_dir' && this.cleanupSelection.targets[id]
+            );
+            const deletePortableDir = !!this.cleanupSelection.targets['portable_dir'];
+
+            const res = await window.go.main.App.ExecuteCleanup({
+              installDir: this.installDir,
+              removeManagedEnv: !!this.cleanupSelection.removeManagedEnv,
+              orphanPathsToRemove: selectedOrphans,
+              deletePortableDir: deletePortableDir,
+              cacheIdsToDelete: selectedCacheIds
+            });
+
+            const warnSuffix = (res.warnings && res.warnings.length > 0)
+              ? ` (Warnings: ${res.warnings.join('; ')})`
+              : '';
+            this.showBanner(
+              `Cleanup complete: removed ${(res.removedPaths || []).length} PATH entries and deleted ${(res.deletedDirectories || []).length} folder(s).${warnSuffix}`,
+              'success'
+            );
+            await this.refreshPreflight();
+            await this.loadCleanupInspection();
+          } catch (err) {
+            this.showBanner('Cleanup failed: ' + err, 'error');
+          } finally {
+            this.isBusy = false;
+          }
+        },
+
+        formatTabBytes(bytes) {
+          if (!bytes || bytes <= 0) return '0 B';
+          const units = ['B', 'KB', 'MB', 'GB'];
+          let i = 0;
+          let val = bytes;
+          while (val >= 1024 && i < units.length - 1) {
+            val /= 1024;
+            i++;
+          }
+          return `${val.toFixed(1)} ${units[i]}`;
+        }
+      }));
+    });
+  </script>
+  <script defer src="./assets/alpine.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans select-none">
+  <div x-data="portableManager" class="max-w-5xl mx-auto px-5 py-4 flex flex-col gap-4">
+
+    <!-- Header & Status Banner -->
+    <header class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 shadow-lg">
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-3">
+          <img
+            src="./assets/logo.png"
+            alt="Sriganti Logo"
+            class="w-11 h-11 rounded-lg bg-white p-1 border border-slate-700/80 shadow-sm object-contain shrink-0" />
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-lg font-bold tracking-tight text-white">Sriganti</h1>
+              <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                No-UAC (HKCU)
+              </span>
+            </div>
+            <p class="text-xs text-slate-400">
+              Light as a sunbird. Portable Flutter &amp; Dart for Windows.
+            </p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button
+            @click="refreshPreflight(); loadCleanupInspection()"
+            :disabled="isBusy"
+            class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition disabled:opacity-50">
+            Refresh Diagnostics
+          </button>
+        </div>
+      </div>
+
+      <!-- Pre-Flight Diagnostic Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5 mt-3.5">
+        <!-- Card 1: SDK State -->
+        <div class="bg-slate-950/70 border border-slate-800/90 rounded-lg p-2.5">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400 font-medium">SDK Status</div>
+          <div class="mt-1 flex items-center gap-2">
+            <span
+              class="w-2.5 h-2.5 rounded-full"
+              :class="{
+                'bg-emerald-400': preflight.status === 'ready',
+                'bg-amber-400': preflight.status === 'relink_needed',
+                'bg-slate-500': preflight.status === 'not_installed'
+              }"></span>
+            <span class="text-xs font-semibold text-white" x-text="preflight.statusLabel"></span>
+          </div>
+          <div class="text-[11px] text-slate-400 mt-0.5 truncate" x-show="preflight.detectedMode">
+            Mode: <span class="text-slate-200 font-medium" x-text="preflight.detectedMode === 'dart-only' ? 'Dart SDK Only' : 'Full Flutter + Dart'"></span>
+          </div>
+        </div>
+
+        <!-- Card 2: Versions -->
+        <div class="bg-slate-950/70 border border-slate-800/90 rounded-lg p-2.5">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400 font-medium">Detected Versions</div>
+          <div class="mt-1 text-xs font-semibold text-white">
+            <span x-show="preflight.flutterVersion">Flutter <span x-text="preflight.flutterVersion" class="text-blue-400"></span></span>
+            <span x-show="!preflight.flutterVersion && preflight.dartVersion">Dart <span x-text="preflight.dartVersion" class="text-blue-400"></span></span>
+            <span x-show="!preflight.flutterVersion && !preflight.dartVersion" class="text-slate-500">None on disk</span>
+          </div>
+          <div class="text-[11px] text-slate-400 mt-0.5" x-show="preflight.dartVersion">
+            Dart SDK: <span class="text-slate-300" x-text="preflight.dartVersion"></span>
+          </div>
+        </div>
+
+        <!-- Card 3: Git Prerequisite -->
+        <div class="bg-slate-950/70 border border-slate-800/90 rounded-lg p-2.5">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400 font-medium">Git Prerequisite</div>
+          <div class="mt-1 flex items-center gap-1.5">
+            <span
+              class="w-2 h-2 rounded-full"
+              :class="preflight.gitAvailable ? 'bg-emerald-400' : 'bg-amber-400'"></span>
+            <span class="text-xs font-semibold text-white"
+              x-text="preflight.gitSource === 'system' ? 'System Git Found' : (preflight.gitSource === 'mingit' ? 'Portable MinGit' : 'Missing (Auto-MinGit)')">
+            </span>
+          </div>
+          <div class="text-[11px] text-slate-400 mt-0.5 truncate" :title="preflight.gitPath" x-text="preflight.gitPath || 'Will provision MinGit if needed'"></div>
+        </div>
+
+        <!-- Card 4: User PATH & PUB_CACHE -->
+        <div class="bg-slate-950/70 border border-slate-800/90 rounded-lg p-2.5">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400 font-medium">HKCU Environment</div>
+          <div class="mt-1 flex items-center gap-2 text-xs">
+            <span :class="preflight.pathAligned ? 'text-emerald-400 font-semibold' : 'text-slate-400'">
+              PATH: <span x-text="preflight.pathAligned ? 'Linked' : 'Unlinked'"></span>
+            </span>
+            <span class="text-slate-600">|</span>
+            <span :class="preflight.pubCacheAligned ? 'text-emerald-400 font-semibold' : 'text-slate-400'">
+              PUB_CACHE: <span x-text="preflight.pubCacheAligned ? 'Set' : 'Unset'"></span>
+            </span>
+          </div>
+          <div class="text-[11px] text-amber-300 mt-0.5 truncate" x-show="preflight.movedFromDir">
+            Moved from: <span x-text="preflight.movedFromDir"></span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Notification Banner -->
+    <div
+      x-show="bannerMessage"
+      x-cloak
+      class="rounded-xl px-4 py-2.5 text-xs font-medium flex items-center justify-between border"
+      :class="{
+        'bg-emerald-950/70 border-emerald-700/60 text-emerald-200': bannerType === 'success',
+        'bg-rose-950/70 border-rose-700/60 text-rose-200': bannerType === 'error',
+        'bg-blue-950/70 border-blue-700/60 text-blue-200': bannerType === 'info'
+      }">
+      <span x-text="bannerMessage"></span>
+      <button @click="bannerMessage = ''" class="text-slate-400 hover:text-white ml-4">&times;</button>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="flex border-b border-slate-800 gap-2">
+      <button
+        @click="activeTab = 'install'"
+        class="px-4 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition"
+        :class="activeTab === 'install'
+          ? 'border-blue-500 text-blue-400 bg-slate-900/60'
+          : 'border-transparent text-slate-400 hover:text-slate-200'">
+        1. Install &amp; Portable Link
+      </button>
+      <button
+        @click="activeTab = 'cleanup'; loadCleanupInspection()"
+        class="px-4 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition flex items-center gap-2"
+        :class="activeTab === 'cleanup'
+          ? 'border-rose-500 text-rose-400 bg-slate-900/60'
+          : 'border-transparent text-slate-400 hover:text-slate-200'">
+        <span>2. Uninstall &amp; Deep Clean</span>
+        <span
+          x-show="(cleanupInspection.orphanedPaths || []).length > 0"
+          class="px-1.5 py-0.2 text-[10px] rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40"
+          x-text="`${cleanupInspection.orphanedPaths.length} orphan PATH`">
+        </span>
+      </button>
+    </div>
+
+    <!-- TAB 1: INSTALL & PORTABLE LINK -->
+    <section x-show="activeTab === 'install'" class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <!-- Left Column: Configuration Controls -->
+      <div class="lg:col-span-7 bg-slate-900/80 border border-slate-800 rounded-xl p-4 flex flex-col gap-4">
+
+        <!-- 1. Single Combined Flow Mode Selection -->
+        <div>
+          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-2">
+            1. SDK Mode (Single Combined Flow)
+          </label>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <label
+              class="cursor-pointer rounded-lg border p-3 transition flex flex-col justify-between"
+              :class="mode === 'flutter'
+                ? 'bg-blue-950/30 border-blue-500 text-white'
+                : 'bg-slate-950/50 border-slate-800 text-slate-300 hover:border-slate-700'">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold">Full Flutter + Dart SDK</span>
+                <input type="radio" name="mode" value="flutter" x-model="mode" class="accent-blue-500" />
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1">
+                Default. Installs Flutter Windows SDK which bundles the complete Dart SDK (`flutter` &amp; `dart` CLI).
+              </p>
+            </label>
+
+            <label
+              class="cursor-pointer rounded-lg border p-3 transition flex flex-col justify-between"
+              :class="mode === 'dart-only'
+                ? 'bg-blue-950/30 border-blue-500 text-white'
+                : 'bg-slate-950/50 border-slate-800 text-slate-300 hover:border-slate-700'">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold">Dart SDK Only</span>
+                <input type="radio" name="mode" value="dart-only" x-model="mode" class="accent-blue-500" />
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1">
+                Lightweight (~5x smaller). Installs standalone `dart-sdk` (`dart` CLI only).
+              </p>
+            </label>
+          </div>
+        </div>
+
+        <!-- 2. Source Selection: Online Release vs Local .zip -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold uppercase tracking-wider text-slate-300">
+              2. SDK Archive Source
+            </label>
+            <div class="inline-flex rounded-lg bg-slate-950 p-0.5 border border-slate-800 text-xs">
+              <button
+                type="button"
+                @click="sourceType = 'online'"
+                class="px-2.5 py-1 rounded-md transition font-medium"
+                :class="sourceType === 'online' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'">
+                Online Official Feed
+              </button>
+              <button
+                type="button"
+                @click="sourceType = 'local'"
+                class="px-2.5 py-1 rounded-md transition font-medium"
+                :class="sourceType === 'local' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'">
+                Local .zip Archive
+              </button>
+            </div>
+          </div>
+
+          <!-- Online Version Selector -->
+          <div x-show="sourceType === 'online'" class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+            <div class="flex items-center gap-2">
+              <div class="flex-1" x-show="mode === 'flutter'">
+                <label class="block text-[11px] text-slate-400 mb-1">Flutter Stable Release (includes Dart):</label>
+                <select
+                  x-model="selectedFlutterVersion"
+                  class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500">
+                  <template x-for="item in flutterReleases" :key="item.version">
+                    <option :value="item.version" x-text="`${item.version} (Dart ${item.dartVersion})${item.isDefault ? ' — Latest Stable' : ''}`"></option>
+                  </template>
+                </select>
+              </div>
+
+              <div class="flex-1" x-show="mode === 'dart-only'">
+                <label class="block text-[11px] text-slate-400 mb-1">Standalone Dart Stable Release (Windows x64):</label>
+                <select
+                  x-model="selectedDartVersion"
+                  class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500">
+                  <template x-for="item in dartReleases" :key="item.version">
+                    <option :value="item.version" x-text="`Dart ${item.version}${item.isDefault ? ' — Latest Stable' : ''}`"></option>
+                  </template>
+                </select>
+              </div>
+
+              <button
+                type="button"
+                @click="loadReleases()"
+                :disabled="loadingReleases || isBusy"
+                class="mt-4 px-2.5 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200">
+                <span x-text="loadingReleases ? '...' : 'Reload'"></span>
+              </button>
+            </div>
+
+            <div x-show="releaseError" class="mt-2 text-[11px] text-amber-300 flex items-center justify-between">
+              <span>Could not reach Google release feed. Check internet or switch to Local .zip Archive.</span>
+              <button type="button" @click="sourceType = 'local'" class="underline text-blue-400 ml-2">Use Local .zip</button>
+            </div>
+          </div>
+
+          <!-- Local .zip Picker -->
+          <div x-show="sourceType === 'local'" x-cloak class="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+            <label class="block text-[11px] text-slate-400 mb-1">
+              Select downloaded `flutter_windows_*.zip` or `dartsdk-windows-x64-release.zip`:
+            </label>
+            <div class="flex gap-2">
+              <input
+                type="text"
+                x-model="localZipPath"
+                placeholder="C:\Downloads\flutter_windows_stable.zip"
+                class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500" />
+              <button
+                type="button"
+                @click="browseLocalZip()"
+                :disabled="isBusy"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200">
+                Browse .zip...
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Portable Target Directory (Option A) -->
+        <div>
+          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+            3. Self-Contained Portable Folder
+          </label>
+          <div class="flex gap-2">
+            <input
+              type="text"
+              x-model="installDir"
+              @change="refreshPreflight(); loadCleanupInspection()"
+              class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500" />
+            <button
+              type="button"
+              @click="browseInstallDir()"
+              :disabled="isBusy"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200">
+              Browse...
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-400 mt-1">
+            Contains SDK binaries, redirected <code class="text-slate-300">pub-cache</code>, and <code class="text-slate-300">state.json</code> so packages never bloat <code class="text-slate-300">%LOCALAPPDATA%</code>.
+          </p>
+        </div>
+
+        <!-- 4. MinGit Auto-Provisioning Checkbox -->
+        <div x-show="mode === 'flutter'" class="bg-slate-950/60 border border-slate-800 rounded-lg p-2.5 flex items-start gap-2.5">
+          <input
+            id="chk-mingit"
+            type="checkbox"
+            x-model="autoInstallMinGit"
+            class="mt-0.5 accent-blue-500" />
+          <label for="chk-mingit" class="text-xs text-slate-300 cursor-pointer">
+            <span class="font-semibold text-white">Auto-provision portable MinGit if Git is missing</span>
+            <span class="block text-[11px] text-slate-400">
+              Flutter requires Git in PATH. If missing on this PC, extracts 64-bit MinGit into <code class="text-slate-300">&lt;folder&gt;\mingit</code> automatically.
+            </span>
+          </label>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-2.5 pt-1 flex-wrap">
+          <button
+            type="button"
+            @click="startInstall()"
+            :disabled="isBusy"
+            class="px-4 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-500 text-white shadow transition disabled:opacity-50">
+            <span x-text="isBusy ? 'Working...' : 'Install &amp; Register Portable SDK'"></span>
+          </button>
+
+          <button
+            type="button"
+            @click="registerPathOnly()"
+            :disabled="isBusy || !preflight.sdkExistsOnDisk"
+            title="Links an already-extracted portable folder into HKCU\Environment on this PC without downloading"
+            class="px-3.5 py-2 text-xs font-semibold rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition disabled:opacity-40">
+            Register PATH Only (Moved Folder / PC)
+          </button>
+
+          <button
+            type="button"
+            x-show="isBusy"
+            @click="cancelActiveOperation()"
+            class="px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600/30 hover:bg-rose-600/50 text-rose-200 border border-rose-500/40">
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Column: Live Progress & Console Log -->
+      <div class="lg:col-span-5 bg-slate-900/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between gap-3">
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-semibold uppercase tracking-wider text-slate-300">Provisioning Progress</span>
+            <span class="text-xs font-bold text-blue-400" x-text="`${progress.percent || 0}%`"></span>
+          </div>
+
+          <div class="w-full h-2.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+            <div
+              class="h-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-all duration-150"
+              :style="`width: ${Math.min(100, Math.max(0, progress.percent || 0))}%`">
+            </div>
+          </div>
+
+          <div class="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+            <span class="truncate" x-text="progress.message || 'Ready.'"></span>
+            <span x-show="progress.bytesTotal > 0" x-text="`${formatTabBytes(progress.bytesProcessed)} / ${formatTabBytes(progress.bytesTotal)}`"></span>
+          </div>
+        </div>
+
+        <!-- Activity Console Drawer -->
+        <div class="flex-1 flex flex-col min-h-[240px]">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Activity Console</span>
+            <button @click="clearLogs()" class="text-[11px] text-slate-400 hover:text-slate-200">Clear</button>
+          </div>
+          <div
+            id="activity-log-box"
+            class="flex-1 bg-slate-950 border border-slate-800 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-y-auto max-h-[260px] space-y-1">
+            <template x-for="(line, idx) in logs" :key="idx">
+              <div class="leading-relaxed break-all" x-text="line"></div>
+            </template>
+            <div x-show="logs.length === 0" class="text-slate-600 italic">No events logged yet.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: UNINSTALL & DEEP CLEAN -->
+    <section x-show="activeTab === 'cleanup'" x-cloak class="bg-slate-900/80 border border-slate-800 rounded-xl p-4 flex flex-col gap-4">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 class="text-sm font-bold text-white">Uninstall &amp; Deep Leftover Cleaner</h2>
+          <p class="text-xs text-slate-400">
+            Cleanly remove portable SDK files, strip <code class="text-slate-300">HKCU\Environment</code> entries, purge orphaned Flutter/Dart paths, and wipe user-profile caches.
+          </p>
+        </div>
+        <button
+          type="button"
+          @click="loadCleanupInspection()"
+          :disabled="isBusy"
+          class="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200">
+          Rescan Paths &amp; Disk Sizes
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Registry & PATH Cleanup Column -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3.5 flex flex-col gap-3">
+          <div class="text-xs font-semibold uppercase tracking-wider text-slate-300">
+            A. User Registry (<code class="text-blue-300">HKCU\Environment</code> — No UAC)
+          </div>
+
+          <label class="flex items-start gap-2.5 cursor-pointer bg-slate-900/70 border border-slate-800 rounded-lg p-2.5">
+            <input type="checkbox" x-model="cleanupSelection.removeManagedEnv" class="mt-0.5 accent-rose-500" />
+            <div class="text-xs">
+              <div class="font-semibold text-white">Remove Managed Portable SDK &amp; PUB_CACHE Entries</div>
+              <div class="text-[11px] text-slate-400 mt-1" x-show="(cleanupInspection.managedPathEntries || []).length > 0">
+                <div class="font-medium text-slate-300">Managed PATH entries to remove:</div>
+                <template x-for="mp in cleanupInspection.managedPathEntries" :key="mp">
+                  <div class="font-mono text-[11px] text-emerald-300 break-all" x-text="`• ${mp}`"></div>
+                </template>
+              </div>
+              <div class="text-[11px] text-slate-400 mt-1" x-show="cleanupInspection.pubCacheVarValue">
+                PUB_CACHE: <span class="font-mono text-emerald-300 break-all" x-text="cleanupInspection.pubCacheVarValue"></span>
+              </div>
+              <div class="text-[11px] text-slate-500 mt-1" x-show="(cleanupInspection.managedPathEntries || []).length === 0 && !cleanupInspection.pubCacheVarValue">
+                No currently registered portable entries detected in HKCU\Environment.
+              </div>
+            </div>
+          </label>
+
+          <!-- Orphaned PATH Scanner Results -->
+          <div>
+            <div class="text-xs font-semibold text-slate-300 mb-1.5">
+              Orphaned / Leftover Flutter &amp; Dart Entries in User PATH:
+            </div>
+            <div x-show="(cleanupInspection.orphanedPaths || []).length === 0" class="text-xs text-slate-500 bg-slate-900/40 border border-slate-800/70 rounded-lg p-2.5">
+              No orphaned or stale Flutter/Dart entries found in <code class="text-slate-400">HKCU\Environment\Path</code>.
+            </div>
+            <div class="space-y-1.5">
+              <template x-for="item in (cleanupInspection.orphanedPaths || [])" :key="item.rawPath">
+                <label class="flex items-start gap-2.5 cursor-pointer bg-amber-950/20 border border-amber-700/40 rounded-lg p-2.5">
+                  <input
+                    type="checkbox"
+                    x-model="cleanupSelection.orphans[item.rawPath]"
+                    class="mt-0.5 accent-amber-500" />
+                  <div class="text-xs">
+                    <div class="font-mono text-amber-200 break-all" x-text="item.rawPath"></div>
+                    <div class="text-[11px] text-amber-400/90 mt-0.5" x-text="item.reason"></div>
+                  </div>
+                </label>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filesystem & Leftover Cache Column -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3.5 flex flex-col gap-2.5">
+          <div class="text-xs font-semibold uppercase tracking-wider text-slate-300">
+            B. Portable Folder &amp; Leftover Caches on Disk
+          </div>
+
+          <div class="space-y-2">
+            <template x-for="target in (cleanupInspection.diskTargets || [])" :key="target.id">
+              <label
+                class="flex items-start justify-between gap-2.5 rounded-lg border p-2.5 transition"
+                :class="target.exists
+                  ? 'cursor-pointer bg-slate-900/80 border-slate-800 hover:border-slate-700'
+                  : 'opacity-50 bg-slate-950 border-slate-900 cursor-not-allowed'">
+                <div class="flex items-start gap-2.5 min-w-0">
+                  <input
+                    type="checkbox"
+                    :disabled="!target.exists"
+                    x-model="cleanupSelection.targets[target.id]"
+                    class="mt-0.5 accent-rose-500" />
+                  <div class="text-xs min-w-0">
+                    <div class="font-semibold text-white" x-text="target.label"></div>
+                    <div class="font-mono text-[11px] text-slate-400 truncate" :title="target.path" x-text="target.path"></div>
+                  </div>
+                </div>
+                <span
+                  class="px-2 py-0.5 text-[11px] font-mono rounded shrink-0"
+                  :class="target.exists ? 'bg-slate-800 text-slate-200' : 'bg-slate-900 text-slate-500'"
+                  x-text="target.exists ? target.sizeHuman : 'Not present'">
+                </span>
+              </label>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Uninstall Action Bar -->
+      <div class="flex items-center justify-between gap-3 pt-2 border-t border-slate-800 flex-wrap">
+        <button
+          type="button"
+          @click="unregisterPathOnly()"
+          :disabled="isBusy"
+          class="px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition disabled:opacity-50">
+          Unregister PATH Only (Keep All Files)
+        </button>
+
+        <div class="flex items-center gap-2">
+          <template x-if="!confirmingCleanup">
+            <button
+              type="button"
+              @click="confirmingCleanup = true"
+              :disabled="isBusy"
+              class="px-4 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white shadow transition disabled:opacity-50">
+              Remove Selected &amp; Clean Leftovers
+            </button>
+          </template>
+
+          <template x-if="confirmingCleanup">
+            <div class="flex items-center gap-2 bg-rose-950/60 border border-rose-700/60 rounded-lg px-3 py-1.5">
+              <span class="text-xs text-rose-200 font-medium">Confirm permanent deletion?</span>
+              <button
+                type="button"
+                @click="executeSelectedCleanup()"
+                class="px-2.5 py-1 text-xs font-bold rounded bg-rose-600 hover:bg-rose-500 text-white">
+                Yes, Remove Now
+              </button>
+              <button
+                type="button"
+                @click="confirmingCleanup = false"
+                class="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-slate-300">
+                Cancel
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</body>
+</html>

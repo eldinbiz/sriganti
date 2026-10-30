@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "flutter-portable-manager",
+  "outputfilename": "flutter-portable-manager",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "wailsjsdir": "./frontend",
+  "author": {
+    "name": "Portable Tools",
+    "email": ""
+  },
+  "info": {
+    "companyName": "Portable Tools",
+    "productName": "Flutter & Dart Portable Manager",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright (C) 2026",
+    "comments": "Zero-UAC Portable Flutter and Dart SDK Manager for Windows 10+"
+  }
+}
